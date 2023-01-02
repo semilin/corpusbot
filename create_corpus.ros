@@ -1,0 +1,119 @@
+#!/bin/sh
+#|-*- mode:lisp -*-|#
+#|
+exec ros -Q -- $0 "$@"
+|#
+(progn ;;init forms
+  (ros:ensure-asdf)
+  #+quicklisp(ql:quickload '(iterate arrows yason alexandria str) :silent t)
+  )
+
+(defpackage :ros.script.create_corpus.3880663385
+  (:use :cl :iterate :arrows :cl-ppcre))
+(in-package :ros.script.create_corpus.3880663385)
+
+(defun json (channel messages)
+  (with-open-file (stream (merge-pathnames "json/" channel)
+			  :direction :output
+			  :if-exists :append
+			  :if-does-not-exist :create)
+    (mapcar (lambda (m)
+	      (yason:encode-alist (list (cons (gethash "author_name" m)
+					      (gethash "contents" m)))
+				  stream)
+	      (write-line "" stream))
+	    messages)))
+
+(defun with-names (channel messages)
+  (with-open-file (stream (merge-pathnames "with-names/" channel)
+			  :direction :output
+			  :if-exists :append
+			  :if-does-not-exist :create)
+    (mapcar (lambda (m) (write-line m stream))
+	    (reverse (mapcar (lambda (m)
+			       (str:concat "[["
+					   (gethash "author_name" m)
+					   "]]: "
+					   (gethash "contents" m)
+					   "####"))
+			     messages)))))
+
+(defun no-names (channel messages)
+  (with-open-file (stream (merge-pathnames "no-names/" channel)
+			  :direction :output
+			  :if-exists :append
+			  :if-does-not-exist :create)
+    (mapcar (lambda (m) (write-line m stream))
+	    (reverse (mapcar (lambda (m)
+			       (gethash "contents" m))
+			     messages)))))
+
+(defun filtered (channel messages)
+  (with-open-file (stream (merge-pathnames "filtered/" channel)
+			  :direction :output
+			  :if-exists :append
+			  :if-does-not-exist :create)
+    (let ((emote (cl-ppcre:create-scanner "<(.?:.+:)\\d+>"))
+	  (ping (cl-ppcre:create-scanner "<@.?\\d+>")))
+      (mapcar (lambda (m) (write-line m stream))
+	      (reverse (mapcar (lambda (m)
+				 (if (not (or (string-equal (gethash "author_name" m)
+							    "KLCord")
+					      (string-equal (gethash "author_name" m)
+							    "amini")))
+				     (let ((contents (gethash "contents" m)))
+				       (str:unwords (mapcar (lambda (w)
+							      (multiple-value-bind (_ result)
+								  (cl-ppcre:scan-to-strings emote w)
+								(if result
+								    (aref result 0)
+								    (multiple-value-bind (_ result)
+									(cl-ppcre:scan-to-strings ping w)
+								      (if result
+									  "@"
+									  w)))))
+							    (str:words contents))))
+				     ""))
+			       messages))))))
+
+(defun user (channel messages name)
+  (with-open-file (stream (merge-pathnames (str:concat name "/") channel)
+			  :direction :output
+			  :if-exists :append
+			  :if-does-not-exist :create)
+    (let ((emote (cl-ppcre:create-scanner "<(.?:.+:)\\d+>"))
+	  (ping (cl-ppcre:create-scanner "<@.?\\d+>")))
+      (mapcar (lambda (m) (write-line m stream))
+	      (reverse (remove-if #'null
+				  (mapcar (lambda (m)
+					    (if (string-equal (gethash "author_name" m)
+							      name)
+						(let ((contents (gethash "contents" m)))
+						  (str:unwords (mapcar (lambda (w)
+									 (multiple-value-bind (_ result)
+									     (cl-ppcre:scan-to-strings emote w)
+									   (if result
+									       (aref result 0)
+									       (multiple-value-bind (_ result)
+										   (cl-ppcre:scan-to-strings ping w)
+										 (if result
+										     "@"
+										     w)))))
+								       (str:words contents))))))
+					  messages)))))))
+
+(defun main (&rest argv)
+  (declare (ignorable argv))
+  (let ((files (sort (iter (for file in (uiop:directory-files "chunks/"))
+			   (collect (->> file
+					 pathname
+					 file-namestring
+					 parse-integer)))
+		     #'<)))
+    (iter (for file in files)
+	  (for text = (uiop:read-file-string (merge-pathnames "chunks/" (write-to-string file))))
+	  (iter (for (channel value) in-hashtable (gethash "channels" (yason:parse text)))
+		(for messages = (gethash "messages" value))
+		(mapcar (lambda (f) (format t "~s~%" f) (funcall f channel messages))
+			(list #'with-names))))))
+;;; vim: set ft=lisp lisp:
